@@ -22,7 +22,7 @@ A PowerShell script to generate reports on your Revolut stock trades esp. for ta
 In `pwsh`:
 
 ```powershell
-.\CalculateRevolutTaxes.ps1 `
+.\Get-RevolutStockReport.ps1 `
     -Path 'activity.csv' `
     -OutTradeFile 'trades.csv' `
     -OutHoldingFile 'holdings.csv' `
