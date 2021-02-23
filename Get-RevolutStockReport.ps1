@@ -20,14 +20,14 @@ Param(
 $ErrorActionPreference = 'Stop'
 
 enum ActivityType {
-    Buy = 0
-    Sell = 1
-    StockSplit = 2
-    Dividend = 3
-    DividendFederalTax = 4
-    DividendNRAWithholding = 5
-    CashDisbursement = 6
-    CashReceipt = 7
+    BUY = 0 # Buy
+    SELL = 1 # Sell
+    SSP = 2 # Stock Split
+    DIV = 3 # Dividend
+    DIVFT = 4 # Dividend Federal Tax
+    DIVNRA = 5 # Dividend NRA Withholding Tax
+    CDEP = 6 # Cash Disbursement
+    CSD = 7 # Cash Receipt
 }
 
 class Activity {
@@ -44,8 +44,12 @@ class Activity {
 class Stock {
     [string] $Symbol
     [datetime] $BuyDate
+    [int] $AgeDays
+    [decimal] $BuyQuantity
+    [decimal] $AdjustedBuyQuantity
     [decimal] $Quantity
     [decimal] $AdjustedQuantity
+    [decimal] $BuyAmount
     [decimal] $Amount
     [decimal] $AmountPerShare
     [decimal] $AdjustedAmountPerShare
@@ -53,30 +57,39 @@ class Stock {
 
 class Trade {
     [string] $Symbol
-    [decimal] $Quantity
-    [decimal] $AdjustedQuantity
     [datetime] $BuyDate
-    [decimal] $BuyAmount
-    [decimal] $BuyAmountPerShare
-    [decimal] $AdjustedBuyAmountPerShare
     [datetime] $SellDate
+    [int] $SellAtAgeDays
+    [decimal] $OriginalBuyQuantity
+    [decimal] $SellQuantity
+    [decimal] $TotalSellQuantity
+    [decimal] $AdjustedOriginalBuyQuantity
+    [decimal] $AdjustedSellQuantity
+    [decimal] $AdjustedTotalSellQuantity
+    [decimal] $OriginalBuyAmount
+    [decimal] $BuyAmount
     [decimal] $SellAmount
+    [decimal] $TotalSellAmount
+    [decimal] $BuyAmountPerShare
     [decimal] $SellAmountPerShare
+    [decimal] $AdjustedBuyAmountPerShare
     [decimal] $AdjustedSellAmountPerShare
     [decimal] $Profit
+    [double] $ProfitPercent
 }
 
 $activityBySymbol = Get-Content -Path $Path | ConvertFrom-Csv -Delimiter ';' | ForEach-Object -Process {
-    $quantity = $_.Quantity ? [decimal]::Parse($_.Quantity) : 0
-    $amount = $_.Amount ? [Math]::Abs([decimal]::Parse($_.Amount)) : $null
+    $usCulture = [Globalization.CultureInfo]::CreateSpecificCulture('en-US')
+    $quantity = $_.Quantity ? [decimal]::Parse($_.Quantity, $usCulture) : 0
+    $amount = $_.Amount ? [Math]::Abs([decimal]::Parse($_.Amount.Replace('(','-').Replace(')',''), $usCulture)) : $null
     $amountPerShare = ($quantity -and $amount) `
         ? [decimal] ($amount / [Math]::Abs($quantity)) `
         : 0
     
     return [Activity] @{
-        Symbol = $_.Symbol ? $_.Symbol.Trim() : $null
-        ActivityType = [ActivityType]$_.ActivityType
-        SettleDate = [DateTime]::Parse($_.SettleDate)
+        Symbol = $_.'Symbol / Description' -match '^([A-Z]+) \-' ? $Matches[1] : $null
+        ActivityType = [ActivityType]$_.'Activity Type'
+        SettleDate = [DateTime]::Parse($_.'Settle Date', $usCulture)
         Quantity = $quantity
         AdjustedQuantity = $quantity
         Amount = $amount
@@ -99,11 +112,11 @@ $activityBySymbol `
     $reverseGroup = @($_.Group)
     [array]::Reverse($reverseGroup)
     $reverseGroup `
-        | Where-Object -Property ActivityType -In 'Buy', 'Sell', 'StockSplit' `
+        | Where-Object -Property ActivityType -In 'BUY', 'SELL', 'SSP' `
         | ForEach-Object -Process {
         
         if ($lastStockSplitAdded) {
-            if ($_.ActivityType -eq 'StockSplit' -and $_.Quantity -lt 0) {
+            if ($_.ActivityType -eq 'SSP' -and $_.Quantity -lt 0) {
                 $stockSplitRatios += $lastStockSplitAdded / [Math]::Abs($_.Quantity)
                 $lastStockSplitAdded = 0
             }
@@ -111,7 +124,7 @@ $activityBySymbol `
                 throw "A stock split stock remove expected to precede a stock split stock add activity ($($_.Symbol))"
             }
         }
-        elseif ($_.ActivityType -eq 'StockSplit') {
+        elseif ($_.ActivityType -eq 'SSP') {
             if ($_.Quantity -gt 0) {
                 $lastStockSplitAdded = $_.Quantity
             }
@@ -130,13 +143,17 @@ $activityBySymbol `
     $stocks = [Collections.Generic.Queue[Stock]]::new()
 
     $_.Group `
-        | Where-Object -Property ActivityType -EQ 'Buy'
+        | Where-Object -Property ActivityType -EQ 'BUY'
         | ForEach-Object -Process {
             $stocks.Enqueue([Stock] @{
                 Symbol = $_.Symbol
                 BuyDate = $_.SettleDate
+                AgeDays = ([DateTime]::Today - $_.SettleDate).TotalDays
+                BuyQuantity = $_.Quantity
+                AdjustedBuyQuantity = $_.AdjustedQuantity
                 Quantity = $_.Quantity
                 AdjustedQuantity = $_.AdjustedQuantity
+                BuyAmount = $_.Amount
                 Amount = $_.Amount
                 AmountPerShare = $_.AmountPerShare
                 AdjustedAmountPerShare = $_.AdjustedAmountPerShare
@@ -144,7 +161,7 @@ $activityBySymbol `
         }
 
     $_.Group `
-        | Where-Object -Property ActivityType -EQ 'Sell'
+        | Where-Object -Property ActivityType -EQ 'SELL'
         | ForEach-Object -Process {
             $sellRemainder = [Math]::Abs($_.Quantity)
             $adjustedSellRemainder = [Math]::Abs($_.AdjustedQuantity)
@@ -154,25 +171,34 @@ $activityBySymbol `
 
                 $soldQuantity = [Math]::Min($sellRemainder, $oldestStock.Quantity)
                 $adjustedSoldQuantity = [Math]::Min($adjustedSellRemainder, $oldestStock.AdjustedQuantity)
-                
+
                 [Trade] @{
                     Symbol = $_.Symbol
-                    Quantity = $soldQuantity
-                    AdjustedQuantity = $adjustedSoldQuantity
                     BuyDate = $oldestStock.BuyDate
-                    BuyAmount= $oldestStock.Amount * ($adjustedSoldQuantity / $oldestStock.AdjustedQuantity)
-                    BuyAmountPerShare = $oldestStock.AmountPerShare
-                    AdjustedBuyAmountPerShare = $oldestStock.AdjustedAmountPerShare
+                    SellAtAgeDays = ($_.SettleDate - $oldestStock.BuyDate).TotalDays
                     SellDate = $_.SettleDate
+                    OriginalBuyQuantity = $oldestStock.BuyQuantity
+                    SellQuantity = $soldQuantity
+                    TotalSellQuantity = [Math]::Abs($_.Quantity)
+                    AdjustedOriginalBuyQuantity = $oldestStock.AdjustedBuyQuantity
+                    AdjustedSellQuantity = $adjustedSoldQuantity
+                    AdjustedTotalSellQuantity = [Math]::Abs($_.AdjustedQuantity)
+                    OriginalBuyAmount = $oldestStock.BuyAmount
+                    BuyAmount = $oldestStock.BuyAmount * ($adjustedSoldQuantity / $oldestStock.AdjustedBuyQuantity)
                     SellAmount = $_.Amount * ($adjustedSoldQuantity / [Math]::Abs($_.AdjustedQuantity))
+                    TotalSellAmount = $_.Amount
+                    BuyAmountPerShare = $oldestStock.AmountPerShare
                     SellAmountPerShare = $_.AmountPerShare
+                    AdjustedBuyAmountPerShare = $oldestStock.AdjustedAmountPerShare
                     AdjustedSellAmountPerShare = $_.AdjustedAmountPerShare
                     Profit = $adjustedSoldQuantity * ($_.AdjustedAmountPerShare - $oldestStock.AdjustedAmountPerShare)
+                    ProfitPercent = [double]($_.AdjustedAmountPerShare / $oldestStock.AdjustedAmountPerShare - 1)
                 } `
                 | Write-Output
                 
                 $oldestStock.Quantity -= $soldQuantity
                 $oldestStock.AdjustedQuantity -= $adjustedSoldQuantity
+                $oldestStock.Amount = $oldestStock.BuyAmount * ($oldestStock.AdjustedQuantity / $oldestStock.AdjustedBuyQuantity)
 
                 $sellRemainder -= $soldQuantity
                 $adjustedSellRemainder -= $adjustedSoldQuantity
@@ -197,8 +223,8 @@ $holding `
 # DIVIDENDS
 $activityBySymbol `
 | ForEach-Object -Process {
-    [decimal] $income = ($_.Group | Where-Object -Property ActivityType -EQ 'Dividend' | Measure-Object -Property Amount -Sum).Sum
-    [decimal] $taxes = ($_.Group | Where-Object -Property ActivityType -IN 'DividendNRAWithholding', 'DividendFederalTax' | Measure-Object -Property Amount -Sum).Sum
+    [decimal] $income = ($_.Group | Where-Object -Property ActivityType -EQ 'DIV' | Measure-Object -Property Amount -Sum).Sum
+    [decimal] $taxes = ($_.Group | Where-Object -Property ActivityType -IN 'DIVNRA', 'DIVFT' | Measure-Object -Property Amount -Sum).Sum
     
     return [PSCustomObject] @{
         Symbol = $_.Name
