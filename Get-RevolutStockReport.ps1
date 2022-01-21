@@ -7,6 +7,9 @@ Param(
     [ValidateScript({ [IO.Path]::GetExtension($_) -ieq '.csv' })]
     [string] $Path,
 
+    [ValidateRange(2000, 3000)]
+    [int] $Year,
+
     [Parameter(Mandatory)]
     [string] $OutTradeFile,
 
@@ -20,14 +23,14 @@ Param(
 $ErrorActionPreference = 'Stop'
 
 enum ActivityType {
-    BUY = 0 # Buy
-    SELL = 1 # Sell
-    SSP = 2 # Stock Split
-    DIV = 3 # Dividend
-    DIVFT = 4 # Dividend Federal Tax
-    DIVNRA = 5 # Dividend NRA Withholding Tax
-    CDEP = 6 # Cash Disbursement
-    CSD = 7 # Cash Receipt
+    Buy = 0 # Buy
+    Sell = 1 # Sell
+    StockSplit = 2 # Stock Split
+    Dividend = 3 # Dividend
+    CashTopUp = 4 # Cash Top-up
+    CashWithdrawal = 5 # Cash Withdrawal
+    TradeRectification = 6 # Trade Rectification
+    CustodyFee = 7 # Custody Fee
 }
 
 class Activity {
@@ -78,18 +81,18 @@ class Trade {
     [double] $ProfitPercent
 }
 
-$activityBySymbol = Get-Content -Path $Path | ConvertFrom-Csv -Delimiter ';' | ForEach-Object -Process {
-    $usCulture = [Globalization.CultureInfo]::CreateSpecificCulture('en-US')
+$activityBySymbol = Get-Content -Path $Path | ConvertFrom-Csv -Delimiter ',' | ForEach-Object -Process {
+    $usCulture = [Globalization.CultureInfo]::CreateSpecificCulture('en-GB')
     $quantity = $_.Quantity ? [decimal]::Parse($_.Quantity, $usCulture) : 0
-    $amount = $_.Amount ? [Math]::Abs([decimal]::Parse($_.Amount.Replace('(','-').Replace(')',''), $usCulture)) : $null
+    $amount = $_.'Total Amount' ? [Math]::Abs([decimal]::Parse($_.'Total Amount'.Replace('(','-').Replace(')',''), $usCulture)) : $null
     $amountPerShare = ($quantity -and $amount) `
         ? [decimal] ($amount / [Math]::Abs($quantity)) `
         : 0
     
     return [Activity] @{
-        Symbol = $_.'Symbol / Description' -match '^([A-Z]+) \-' ? $Matches[1] : $null
-        ActivityType = [ActivityType]$_.'Activity Type'
-        SettleDate = [DateTime]::Parse($_.'Settle Date', $usCulture)
+        Symbol = $_.Ticker
+        ActivityType = [ActivityType]($_.Type -replace '[^a-zA-Z]', '')
+        SettleDate = [DateTime]::Parse($_.Date, $usCulture)
         Quantity = $quantity
         AdjustedQuantity = $quantity
         Amount = $amount
@@ -97,45 +100,58 @@ $activityBySymbol = Get-Content -Path $Path | ConvertFrom-Csv -Delimiter ';' | F
         AdjustedAmountPerShare = $amountPerShare
     }
 } `
-| Where-Object -FilterScript { $_.Symbol } `
+| Where-Object -FilterScript {
+    $_.Symbol -and (-not $Year -or $_.SettleDate.Year -le $Year)
+} `
 | Sort-Object -Property Symbol, SettleDate, ActivityType, Quantity `
 | Group-Object -Property Symbol
 
 $holding = @()
 
-$activityBySymbol `
+$trades = $activityBySymbol `
 | ForEach-Object -Process {
-    [decimal] $lastStockSplitAdded = 0
-    [double[]] $stockSplitRatios = @()
 
     # Adjust quantities, prices and fees based for stock splits
+    $currentQuantity = 0
+    $_.Group `
+        | Where-Object -Property ActivityType -In 'Buy', 'Sell', 'StockSplit' `
+        | ForEach-Object -Process {
+
+        $quantity = [Math]::Abs($_.Quantity)
+
+        if ($_.ActivityType -in 'Buy', 'StockSplit') {
+            $currentQuantity += $quantity
+        }
+        else {
+            $currentQuantity -= $quantity
+        }
+    }
+
+    [double[]] $stockSplitRatios = @()
     $reverseGroup = @($_.Group)
     [array]::Reverse($reverseGroup)
     $reverseGroup `
-        | Where-Object -Property ActivityType -In 'BUY', 'SELL', 'SSP' `
+        | Where-Object -Property ActivityType -In 'Buy', 'Sell', 'StockSplit' `
         | ForEach-Object -Process {
-        
-        if ($lastStockSplitAdded) {
-            if ($_.ActivityType -eq 'SSP' -and $_.Quantity -lt 0) {
-                $stockSplitRatios += $lastStockSplitAdded / [Math]::Abs($_.Quantity)
-                $lastStockSplitAdded = 0
-            }
-            else {
-                throw "A stock split stock remove expected to precede a stock split stock add activity ($($_.Symbol))"
-            }
-        }
-        elseif ($_.ActivityType -eq 'SSP') {
-            if ($_.Quantity -gt 0) {
-                $lastStockSplitAdded = $_.Quantity
-            }
-            else {
-                throw "A stock split stock add expected to follow a stock split stock remove activity ($($_.Symbol))"
-            }
+
+        $quantity = [Math]::Abs($_.Quantity)
+
+        if ($_.ActivityType -eq 'StockSplit') {
+            $previousQuantity = $currentQuantity - $quantity
+            $stockSplitRatios += $currentQuantity / $previousQuantity
+            $currentQuantity = $previousQuantity
         }
         else {
             foreach ($stockSplitRatio in $stockSplitRatios) {
                 $_.AdjustedQuantity = [decimal]($_.AdjustedQuantity * $stockSplitRatio)
                 $_.AdjustedAmountPerShare = [decimal]($_.AdjustedAmountPerShare / $stockSplitRatio)
+            }
+
+            if ($_.ActivityType -in 'Buy') {
+                $currentQuantity -= $quantity
+            }
+            else {
+                $currentQuantity += $quantity
             }
         }
     }
@@ -143,7 +159,7 @@ $activityBySymbol `
     $stocks = [Collections.Generic.Queue[Stock]]::new()
 
     $_.Group `
-        | Where-Object -Property ActivityType -EQ 'BUY'
+        | Where-Object -Property ActivityType -EQ 'Buy'
         | ForEach-Object -Process {
             $stocks.Enqueue([Stock] @{
                 Symbol = $_.Symbol
@@ -161,7 +177,7 @@ $activityBySymbol `
         }
 
     $_.Group `
-        | Where-Object -Property ActivityType -EQ 'SELL'
+        | Where-Object -Property ActivityType -EQ 'Sell'
         | ForEach-Object -Process {
             $sellRemainder = [Math]::Abs($_.Quantity)
             $adjustedSellRemainder = [Math]::Abs($_.AdjustedQuantity)
@@ -171,7 +187,9 @@ $activityBySymbol `
 
                 $soldQuantity = [Math]::Min($sellRemainder, $oldestStock.Quantity)
                 $adjustedSoldQuantity = [Math]::Min($adjustedSellRemainder, $oldestStock.AdjustedQuantity)
-
+                Write-Debug $_.Symbol
+                Write-Debug $_.SettleDate
+                Write-Debug $oldestStock.AdjustedAmountPerShare
                 [Trade] @{
                     Symbol = $_.Symbol
                     BuyDate = $oldestStock.BuyDate
@@ -195,7 +213,7 @@ $activityBySymbol `
                     ProfitPercent = [double]($_.AdjustedAmountPerShare / $oldestStock.AdjustedAmountPerShare - 1)
                 } `
                 | Write-Output
-                
+
                 $oldestStock.Quantity -= $soldQuantity
                 $oldestStock.AdjustedQuantity -= $adjustedSoldQuantity
                 $oldestStock.Amount = $oldestStock.BuyAmount * ($oldestStock.AdjustedQuantity / $oldestStock.AdjustedBuyQuantity)
@@ -211,8 +229,15 @@ $activityBySymbol `
         | Write-Output
 
     $holding += $stocks
-} `
-| ConvertTo-Csv -Delimiter ';' `
+}
+
+if ($Year) {
+    $trades = $trades | Where-Object -FilterScript {
+        $_.SellDate.Year -eq $Year
+    }
+}
+
+$trades | ConvertTo-Csv -Delimiter ';' `
 | Out-File -FilePath $OutTradeFile -Force
 
 # HOLDING
@@ -223,14 +248,19 @@ $holding `
 # DIVIDENDS
 $activityBySymbol `
 | ForEach-Object -Process {
-    [decimal] $income = ($_.Group | Where-Object -Property ActivityType -EQ 'DIV' | Measure-Object -Property Amount -Sum).Sum
-    [decimal] $taxes = ($_.Group | Where-Object -Property ActivityType -IN 'DIVNRA', 'DIVFT' | Measure-Object -Property Amount -Sum).Sum
+    $dividends = $_.Group | Where-Object -Property ActivityType -EQ 'Dividend'
+
+    if ($Year) {
+        $dividends = $dividends | Where-Object -FilterScript {
+            $_.SettleDate.Year -eq $Year
+        }
+    }
+
+    [decimal] $profit = ($dividends | Measure-Object -Property Amount -Sum).Sum
     
     return [PSCustomObject] @{
         Symbol = $_.Name
-        DividendIncome = $income
-        DividendTaxes = $taxes
-        DividendProfit = $income - $taxes
+        DividendProfit = $profit
     }
 } `
 | ConvertTo-Csv -Delimiter ';' `

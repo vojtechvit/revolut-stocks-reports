@@ -1,0 +1,4 @@
+pwsh -Command ..\Get-RevolutStockReport.ps1 -Path '.\sample_input.csv' -OutTradeFile 'trades_all.csv' -OutHoldingFile 'holdings_all.csv' -OutDividendFile 'dividends_all.csv'
+pwsh -Command ..\Get-RevolutStockReport.ps1 -Path '.\sample_input.csv' -Year 2019 -OutTradeFile 'trades_2019.csv' -OutHoldingFile 'holdings_2019.csv' -OutDividendFile 'dividends_2019.csv'
+pwsh -Command ..\Get-RevolutStockReport.ps1 -Path '.\sample_input.csv' -Year 2020 -OutTradeFile 'trades_2020.csv' -OutHoldingFile 'holdings_2020.csv' -OutDividendFile 'dividends_2020.csv'
+pwsh -Command ..\Get-RevolutStockReport.ps1 -Path '.\sample_input.csv' -Year 2021 -OutTradeFile 'trades_2021.csv' -OutHoldingFile 'holdings_2021.csv' -OutDividendFile 'dividends_2021.csv'
