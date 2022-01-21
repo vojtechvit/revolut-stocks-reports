@@ -7,6 +7,9 @@ Param(
     [ValidateScript({ [IO.Path]::GetExtension($_) -ieq '.csv' })]
     [string] $Path,
 
+    [ValidateRange(2000, 3000)]
+    [int] $Year,
+
     [Parameter(Mandatory)]
     [string] $OutTradeFile,
 
@@ -20,14 +23,14 @@ Param(
 $ErrorActionPreference = 'Stop'
 
 enum ActivityType {
-    BUY = 0 # Buy
-    SELL = 1 # Sell
-    SSP = 2 # Stock Split
-    DIV = 3 # Dividend
-    DIVFT = 4 # Dividend Federal Tax
-    DIVNRA = 5 # Dividend NRA Withholding Tax
-    CDEP = 6 # Cash Disbursement
-    CSD = 7 # Cash Receipt
+    BUY # Buy
+    SELL # Sell
+    SSP # Stock Split
+    DIV # Dividend
+    DIVFT # Dividend Federal Tax
+    DIVNRA # Dividend NRA Withholding Tax
+    CDEP # Cash Disbursement
+    CSD # Cash Receipt
 }
 
 class Activity {
@@ -85,7 +88,7 @@ $activityBySymbol = Get-Content -Path $Path | ConvertFrom-Csv -Delimiter ';' | F
     $amountPerShare = ($quantity -and $amount) `
         ? [decimal] ($amount / [Math]::Abs($quantity)) `
         : 0
-    
+
     return [Activity] @{
         Symbol = $_.'Symbol / Description' -match '^([A-Z]+) \-' ? $Matches[1] : $null
         ActivityType = [ActivityType]$_.'Activity Type'
@@ -97,13 +100,15 @@ $activityBySymbol = Get-Content -Path $Path | ConvertFrom-Csv -Delimiter ';' | F
         AdjustedAmountPerShare = $amountPerShare
     }
 } `
-| Where-Object -FilterScript { $_.Symbol } `
+| Where-Object -FilterScript {
+    $_.Symbol -and (-not $Year -or $_.SettleDate.Year -le $Year)
+} `
 | Sort-Object -Property Symbol, SettleDate, ActivityType, Quantity `
 | Group-Object -Property Symbol
 
 $holding = @()
 
-$activityBySymbol `
+$trades = $activityBySymbol `
 | ForEach-Object -Process {
     [decimal] $lastStockSplitAdded = 0
     [double[]] $stockSplitRatios = @()
@@ -211,8 +216,15 @@ $activityBySymbol `
         | Write-Output
 
     $holding += $stocks
-} `
-| ConvertTo-Csv -Delimiter ';' `
+}
+
+if ($Year) {
+    $trades = $trades | Where-Object -FilterScript {
+        $_.SellDate.Year -eq $Year
+    }
+}
+
+$trades | ConvertTo-Csv -Delimiter ';' `
 | Out-File -FilePath $OutTradeFile -Force
 
 # HOLDING
@@ -223,8 +235,20 @@ $holding `
 # DIVIDENDS
 $activityBySymbol `
 | ForEach-Object -Process {
-    [decimal] $income = ($_.Group | Where-Object -Property ActivityType -EQ 'DIV' | Measure-Object -Property Amount -Sum).Sum
-    [decimal] $taxes = ($_.Group | Where-Object -Property ActivityType -IN 'DIVNRA', 'DIVFT' | Measure-Object -Property Amount -Sum).Sum
+    $incomeActivities = $_.Group | Where-Object -Property ActivityType -EQ 'DIV'
+    $taxActivities = $_.Group | Where-Object -Property ActivityType -IN 'DIVNRA', 'DIVFT'
+    
+    if ($Year) {
+        $incomeActivities = $incomeActivities | Where-Object -FilterScript {
+            $_.SettleDate.Year -eq $Year
+        }
+        $taxActivities = $taxActivities | Where-Object -FilterScript {
+            $_.SettleDate.Year -eq $Year
+        }
+    }
+
+    [decimal] $income = ($incomeActivities | Measure-Object -Property Amount -Sum).Sum
+    [decimal] $taxes = ($taxActivities | Measure-Object -Property Amount -Sum).Sum
     
     return [PSCustomObject] @{
         Symbol = $_.Name

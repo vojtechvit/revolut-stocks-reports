@@ -1,49 +1,53 @@
 # Revolut stock reporting
-A PowerShell script to generate reports on your Revolut stock trades esp. for tax purposes.
+A script to generate reports on your Revolut stock trades - typically for tax purposes.
+
+## Features
+
+* **Stock trades report**
+    * A summary of all stock trades in the chosen period
+    * Each "sell" is paired with the oldest possible "buy" order to calculate the profit of a trade - an approach typically required by tax authorities
+    * Stock Split events are supported - "adjusted" quantities, amounts and prices are calculated to show numbers according to the current stock size
+* **Stock holdings report**
+    * A summary of all stocks you own at the end of the chosen period
+    * The granularity is at individual purchases level so you can know how old your stocks are - in some tax systems you may avoid taxes if you sell stocks old enough
+* **Dividends report**
+    * A summary of all dividend profits in the chosen period
+
+See the [sample outputs](samples) for more detail on what to expect.
+
+### Known limitations
+
+* Stock trade excemptions from taxes on the basis of the stock age are not currently supported
 
 ## Pre-requisites
-1. [PowerShell 7.1](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell?view=powershell-7.1) or higher
-2. A CSV with your Revolut stock activities exported from your Revolute stock trade statements (a PDF but you can open it e.g. in Microsoft Word to preserve the table formatting in order to copy into Microsoft Excel to save as a CSV).
-   * The CSV should have the following format:
-    ```
-    Trade Date;Settle Date;Currency;Activity Type;Symbol / Description;Quantity;Price;Amount
-    01/29/2020;01/31/2020;USD;BUY;MSFT - MICROSOFT CORP   COM - TRD MSFT B 20 at 168.2199 Agency.;20;168.2199;(3,364.40)
-    ```
-   * The supported activity types are:
-      Activity Code | Description
-      ------------- | ---------------
-      BUY | Buy
-      SELL | Sell
-      SSP | Stock Split
-      DIV | Dividend
-      DIVFT | Dividend Federal Tax
-      DIVNRA | Dividend NRA Withholding Tax
-      CDEP | Cash Disbursement
-      CSD | Cash Receipt
-   * Other activity types will be ignored
+* [PowerShell 7.1](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell?view=powershell-7.1) or higher
 
 ## How to run
-In `pwsh`:
+1. Download the script [Get-RevolutStockReport.ps1](https://raw.githubusercontent.com/vojtechvit/revolut-stocks-reports/main/Get-RevolutStockReport.ps1)
+2. Download PDF exports off all your stock activities from Revolut app
+   * **Important:** The export must include even all activities prior to the period you are interested in! This is necessary in order to calculate the trade profits correctly!
+3. Open the PDFs in Microsoft Word, select the Activity table from each and paste it into a Microsoft Excel spreadsheet to form a complete table of all activities
+4. Export the Microsoft Excel activities spreadsheet into CSV
+5. Open PowerShell (`pwsh`) and run the following command in the directory where you downloaded the script and your CSV export:
 
 ```powershell
+# To create reports for the whole history of your activities
 .\Get-RevolutStockReport.ps1 `
     -Path 'activities.csv' `
     -OutTradeFile 'trades.csv' `
     -OutHoldingFile 'holdings.csv' `
     -OutDividendFile 'dividends.csv'
+
+# To create reports for a specific calendar year
+.\Get-RevolutStockReport.ps1 `
+    -Path 'activities.csv' `
+    -Year 2022 `
+    -OutTradeFile 'trades_2022.csv' `
+    -OutHoldingFile 'holdings_2022.csv' `
+    -OutDividendFile 'dividends_2022.csv'
 ```
 
-## Output
-The script creates three CSV files:
-
-1. _Trades_ - Lists all stock trades with the assumption that the oldest stocks are always sold first
-   * This should allow you to report your profit/loss on stock trades
-2. _Holdings_ - Lists your holdings (after trades) where each remaining stock purchase is listed individually
-   * This should allow you to see how "old" your stocks are. Some tax systems allow you to avoid taxation if you hold stocks long enough.
-3. _Dividends_ - Lists your dividend earnings including paid taxes
-   * This should allow you to report your profits on dividends
-
 # Important Note
-I do not make any guarantees about the correctness or reliability of this unofficial script. Its potential use, e.g. for tax reporting purposes, is completely at your own responsiblity.
+I do not make any guarantees about the correctness or reliability of this script. Its potential use, e.g. for tax reporting purposes, is completely at your own risk & responsiblity.
 
 That being said, if you find bugs, please feel free to contribute!
